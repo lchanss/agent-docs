@@ -1,8 +1,8 @@
-\# Project Guidelines
+# Project Guidelines
 
 
 
-\## Frontend Development
+## Frontend Development
 
 Please follow the guidelines in @frontend-guidelines.md for all frontend code.
 
