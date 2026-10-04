@@ -63,29 +63,34 @@ function AdminSubmitButton() {
 
 #### Abstract Implementation Details
 
+Move logic unrelated to the component's core role (auth checks, redirects, confirm dialogs) into a wrapper component or HOC.
+
 ```javascript
-// ❌ Bad: Low-level details exposed
-async function LoginStartPage() {
-  const handleLogin = async () => {
-    const response = await fetch("/api/login", {
-      method: "POST",
-      body: JSON.stringify({ username, password }),
-    });
-    if (response.ok) {
-      localStorage.setItem("token", response.token);
-      window.location.href = "/dashboard";
-    }
-  };
+// ❌ Bad: Auth check + redirect exposed inside the page component
+function LoginStartPage() {
+  useCheckLogin({
+    onChecked: (status) => {
+      if (status === "LOGGED_IN") location.href = "/home";
+    },
+  });
+  /* ... login UI ... */
 }
 
-// ✅ Good: Abstracted implementation
-async function LoginStartPage() {
-  const handleLogin = async () => {
-    const success = await attemptLogin(username, password);
-    if (success) {
-      navigateToDashboard();
-    }
-  };
+// ✅ Good: Wrapper handles auth; the page only renders login UI
+function App() {
+  return (
+    <AuthGuard>
+      <LoginStartPage />
+    </AuthGuard>
+  );
+}
+
+function AuthGuard({ children }) {
+  const status = useCheckLoginStatus();
+  useEffect(() => {
+    if (status === "LOGGED_IN") location.href = "/home";
+  }, [status]);
+  return status !== "LOGGED_IN" ? children : null;
 }
 ```
 
@@ -171,39 +176,45 @@ async function onLikeClick() {
 
 ### 1.3 Top-to-Bottom Flow
 
-#### Reduce Timeline Shifts
+#### Reduce Viewpoint Shifts
+
+Don't make the reader jump between multiple functions, files, or constants to understand one behavior.
 
 ```javascript
-// ❌ Bad: Jumping between different times
-function UserPolicy() {
-  const policy = fetchPolicy(); // Future: async
-
-  if (!user) return null; // Present: check
-
-  useEffect(() => {
-    // Future: effect
-    trackView();
-  }, []);
-
-  return <div>{policy?.content}</div>; // Present: render
+// ❌ Bad: Must read Page → getPolicyByRole → POLICY_SET (3 places)
+function Page() {
+  const policy = getPolicyByRole(useUser().role);
+  return <Button disabled={!policy.canInvite}>Invite</Button>;
 }
 
-// ✅ Good: Consistent timeline
-function UserPolicy() {
-  // All present checks first
-  if (!user) return null;
-
-  // All data fetching
-  const policy = fetchPolicy();
-
-  // All effects
-  useEffect(() => {
-    trackView();
-  }, []);
-
-  // Final render
-  return <div>{policy?.content}</div>;
+function getPolicyByRole(role) {
+  const policy = POLICY_SET[role];
+  return { canInvite: policy.includes("invite"), canView: policy.includes("view") };
 }
+
+const POLICY_SET = { admin: ["invite", "view"], viewer: ["view"] };
+
+// ✅ Good: Visible in one place, read top to bottom
+function Page() {
+  const user = useUser();
+  const policy = {
+    admin: { canInvite: true, canView: true },
+    viewer: { canInvite: false, canView: true },
+  }[user.role];
+  return <Button disabled={!policy.canInvite}>Invite</Button>;
+}
+```
+
+#### Read Left to Right
+
+Write range conditions as `min <= x && x <= max` (like a math inequality), not `x >= min && x <= max`.
+
+```javascript
+// ❌ Bad
+if (price >= minPrice && price <= maxPrice) { ... }
+
+// ✅ Good
+if (minPrice <= price && price <= maxPrice) { ... }
 ```
 
 #### Simplify Ternary Operators
@@ -235,14 +246,26 @@ Code should behave as expected based on function names, parameters, and return t
 
 ### 2.1 Avoid Name Collisions
 
-```javascript
-// ❌ Bad: Confusing names
-import { Button } from "./components/Button";
-import { Button as BaseButton } from "library";
+Same name must mean same behavior. Never give a wrapper the same name as the library it wraps.
 
-// ✅ Good: Clear distinctions
-import { AppButton } from "./components/AppButton";
-import { Button } from "library";
+```javascript
+// ❌ Bad: Looks like the library's http.get, but silently adds auth
+import { http as httpLibrary } from "@some-library/http";
+
+export const http = {
+  async get(url) {
+    const token = await fetchToken();
+    return httpLibrary.get(url, { headers: { Authorization: `Bearer ${token}` } });
+  },
+};
+
+// ✅ Good: The added behavior is in the name
+export const httpService = {
+  async getWithAuth(url) {
+    const token = await fetchToken();
+    return httpLibrary.get(url, { headers: { Authorization: `Bearer ${token}` } });
+  },
+};
 ```
 
 ### 2.2 Unify Return Types for Similar Functions
@@ -274,6 +297,13 @@ function useServerTime() {
     queryFn: fetchServerTime,
   });
   return query; // Same return pattern
+}
+
+// Same rule for validators: all return { ok: true } | { ok: false, reason }
+function checkIsNameValid(name) {
+  if (name.length === 0) return { ok: false, reason: "Name is required" };
+  if (name.length >= 20) return { ok: false, reason: "Name must be under 20 characters" };
+  return { ok: true };
 }
 ```
 
@@ -467,25 +497,32 @@ function useUserSheet() {
 #### Using Composition
 
 ```javascript
-// ❌ Bad: Props drilling
-function ItemEditModal({ items, recommendedItems, onConfirm }) {
+// ❌ Bad: ItemEditBody doesn't use items/recommendedItems/onConfirm — it only forwards them
+function ItemEditBody({ keyword, onKeywordChange, items, recommendedItems, onConfirm }) {
   return (
-    <Modal>
-      <ItemEditBody
-        items={items}
-        recommendedItems={recommendedItems}
-        onConfirm={onConfirm}
-      />
-    </Modal>
+    <>
+      <Input value={keyword} onChange={(e) => onKeywordChange(e.target.value)} />
+      <ItemEditList items={items} recommendedItems={recommendedItems} onConfirm={onConfirm} />
+    </>
   );
 }
 
-// ✅ Good: Composition pattern
-function ItemEditModal({ onConfirm }) {
+// ✅ Good: Composition — the parent places ItemEditList directly
+function ItemEditBody({ children, keyword, onKeywordChange }) {
+  return (
+    <>
+      <Input value={keyword} onChange={(e) => onKeywordChange(e.target.value)} />
+      {children}
+    </>
+  );
+}
+
+function ItemEditModal({ items, recommendedItems, onConfirm }) {
+  const [keyword, setKeyword] = useState("");
   return (
     <Modal>
-      <ItemEditBody>
-        <ItemEditList onConfirm={onConfirm} />
+      <ItemEditBody keyword={keyword} onKeywordChange={setKeyword}>
+        <ItemEditList items={items} recommendedItems={recommendedItems} onConfirm={onConfirm} />
       </ItemEditBody>
     </Modal>
   );
@@ -517,7 +554,7 @@ When reviewing or writing code, verify:
 - [ ] Functions have single, clear purposes
 - [ ] Complex conditions have descriptive names
 - [ ] Magic numbers are replaced with named constants
-- [ ] Code flows logically from top to bottom
+- [ ] Code flows logically from top to bottom (no nested ternaries, range checks read `min <= x && x <= max`)
 - [ ] Implementation details are properly abstracted
 
 ### Predictability
@@ -537,7 +574,7 @@ When reviewing or writing code, verify:
 ### Coupling
 
 - [ ] Components have single responsibilities
-- [ ] Props drilling doesn't exceed 2-3 levels
+- [ ] No props that a component only passes through without using
 - [ ] Duplication is allowed when it reduces coupling
 - [ ] Dependencies between modules are minimized
 
@@ -548,10 +585,11 @@ When reviewing or writing code, verify:
 When generating frontend code:
 
 1. **Start with the simplest solution** that meets requirements
-2. **Extract abstractions only when** patterns repeat 3+ times
+2. **Extract abstractions only when** the copies must change together. If behavior may diverge per screen (different logging, different follow-up action, different text), keep the duplication
 3. **Prefer composition over** complex prop passing
 4. **Keep functions small** - under 50 lines ideally
 5. **Name things based on what they do**, not how they do it
+6. **Ask the developer** when a choice depends on requirements you can't see (whether to extract shared code, field- vs form-level validation)
 
 ### Progressive Enhancement
 
@@ -579,7 +617,7 @@ type Status = "idle" | "loading" | "success" | "error";
 
 Remember these principles can conflict:
 
-- **Readability vs. Cohesion**: Sometimes duplication is clearer than abstraction
+- **Readability vs. Cohesion**: If changing only one copy would **cause a bug** → extract (cohesion wins). Otherwise → allow duplication (readability wins)
 - **Predictability vs. Flexibility**: Consistent patterns may limit flexibility
 - **Cohesion vs. Coupling**: Grouping code together can increase dependencies
 
@@ -596,8 +634,8 @@ Consider refactoring when:
 
 - A file exceeds 200 lines
 - A function exceeds 50 lines
-- Props are passed through 3+ components unchanged
-- The same code appears in 3+ places
+- A component forwards a prop to a child without using it (even 1 level)
+- The same code appears in multiple places **and** must always change together (duplication that may diverge is fine)
 - A component has 3+ separate responsibilities
 - Nested conditionals exceed 3 levels deep
 
